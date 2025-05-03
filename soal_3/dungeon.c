@@ -1,6 +1,3 @@
-// dungeon.c (RPC Server menggunakan socket + thread)
-
-// soal a
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -9,8 +6,7 @@
 #include <netinet/in.h>
 #include <time.h>
 
-// soal d
-#include "shop.c" // d
+#include "shop.c"
 
 #define PORT 12345
 
@@ -46,7 +42,6 @@ void* handle_client(void* socket_desc) {
         int read_size = recv(sock, buffer, sizeof(buffer), 0);
         if (read_size <= 0) break;
 
-        // soal d
         if (strncmp(buffer, "shop", 4) == 0) {
             char response[1024];
             list_weapons(response);
@@ -70,10 +65,8 @@ void* handle_client(void* socket_desc) {
                 sprintf(response, "Bought %s! New damage: %d. Passive: %s\nRemaining gold: %d", wname, dmg, passive, remaining);
             }
             send(sock, response, strlen(response), 0);
-        } // d
+        }
         
-
-        // soal f
         else if (strncmp(buffer, "battle start", 12) == 0) {
             enemy.max_hp = 50 + rand() % 151; 
             enemy.hp = enemy.max_hp;
@@ -87,6 +80,7 @@ void* handle_client(void* socket_desc) {
             sprintf(res, "A wild enemy appears! HP: %s %d/%d\n", hp_bar, enemy.hp, enemy.max_hp);
             send(sock, res, strlen(res), 0);
         }
+        
         else if (strncmp(buffer, "battle attack", 13) == 0 && enemy.in_battle) {
             int base_dmg = 0;
             char passive[100] = "";
@@ -100,11 +94,9 @@ void* handle_client(void* socket_desc) {
             if (dmg_str) base_dmg = atoi(dmg_str);
             if (passive_str) strncpy(passive, passive_str, sizeof(passive) - 1);
 
-            // === Damage Variation (misalnya ±20%) ===
             int variation = base_dmg * (rand() % 21 - 10) / 100; // -10% to +10%
             int final_dmg = base_dmg + variation;
 
-            // === Critical Hit Chance ===
             int crit_chance = rand() % 101;
             int is_crit = 0;
             if (crit_chance < 25) { // 25% chance
@@ -153,15 +145,10 @@ void* handle_client(void* socket_desc) {
         else if (strncmp(buffer, "battle exit", 11) == 0) {
             enemy.in_battle = 0;
             send(sock, "You fled the battle.\n", 22, 0);
-        } // f
+        }
 
         printf("Received command: %s\n", buffer);
-
-        // Simulasi respon
-        // char* fallback_response = "Dungeon accepted your command.\n";
-        // send(sock, fallback_response, strlen(fallback_response), 0);
     }
-
     close(sock);
     free(socket_desc);
     pthread_exit(NULL);
@@ -196,4 +183,3 @@ int main() {
     close(server_fd);
     return 0;
 }
-// a
