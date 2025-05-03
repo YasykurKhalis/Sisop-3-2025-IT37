@@ -99,6 +99,7 @@ int main() {
     return 0;
 } // a
 
+// fungsi
 void displayHunterMenu() {
     printf("\n=== HUNTER MENU ===\n");
     printf("1. Register\n");
