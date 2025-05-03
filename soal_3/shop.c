@@ -1,4 +1,3 @@
-// soal d
 #include <stdio.h>
 #include <string.h>
 
@@ -34,7 +33,6 @@ void list_weapons(char* out) {
     strcat(out, "Choose a weapon number to buy:\n");
 }
 
-// Returns: price if valid, -1 if invalid
 int buy_weapon(int id, int* damage, char* name_out, char* passive_out) {
     if (id < 1 || id > weapon_count) return -1;
 
@@ -44,4 +42,4 @@ int buy_weapon(int id, int* damage, char* name_out, char* passive_out) {
     strcpy(passive_out, w.passive);
 
     return w.price;
-} // d
+}
