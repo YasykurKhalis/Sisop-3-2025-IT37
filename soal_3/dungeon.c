@@ -137,6 +137,18 @@ void* handle_client(void* socket_desc) {
             if (enemy.hp <= 0) {
                 enemy.in_battle = 0;
                 sprintf(res, "%s\nYou defeated the enemy! You gained %d gold. [REWARD:%d]\n\n", extra_info, enemy.reward, enemy.reward);
+
+                enemy.max_hp = 50 + rand() % 151;
+                enemy.hp = enemy.max_hp;
+                enemy.reward = 100 + rand() % 101;
+                enemy.in_battle = 1;
+
+                generate_health_bar(hp_bar, enemy.hp, enemy.max_hp);
+
+                char spawn_info[128];
+                sprintf(spawn_info, "A new enemy appears!\nEnemy HP: %s %d/%d\n", hp_bar, enemy.hp, enemy.max_hp);
+
+                strcat(res, spawn_info);
             } else {
                 sprintf(res, "%s\nYou dealt %d damage!\nEnemy HP: %s %d/%d\n", extra_info, final_dmg, hp_bar, enemy.hp, enemy.max_hp);
             }
