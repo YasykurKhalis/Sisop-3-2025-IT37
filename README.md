@@ -515,6 +515,283 @@ int main() {
 
 ![image](https://github.com/user-attachments/assets/abb8e0bf-261d-4c01-a959-b931422946e3)
 
+# Soal 2
+
+common.c
+```
+#define MAX_ORDERS 100
+#define NAME_LENGTH 50
+#define ADDRESS_LENGTH 100
+#define AGENT_NAME_LENGTH 20
+```
+Memberikan batas maksimal untuk order.
+```
+typedef struct {
+    char name[NAME_LENGTH];
+    char address[ADDRESS_LENGTH];
+    char type[10];       // "Express" atau "Reguler"
+    char status[20];     // "Pending" atau "Delivered"
+    char agent[AGENT_NAME_LENGTH]; // nama agent pengantar
+```
+Menyimpan satu pesanan (nama, alamat, tipe, status, agent).
+```
+typedef struct {
+    Order orders[MAX_ORDERS];
+    int order_count;
+} SharedData;
+```
+Menyimpan array Order + jumlah total pesanan
+
+
+init_Data.c
+```
+int main() {
+    int shmid = shmget(SHM_KEY, sizeof(SharedData), IPC_CREAT | 0666);
+    if (shmid < 0) {
+        perror("shmget");
+        return 1;
+    }
+```
+Membuat shared memory sebesar struct shared data.
+
+```
+ SharedData *shared_data = (SharedData*) shmat(shmid, NULL, 0);
+    if (shared_data == (void*) -1) {
+        perror("shmat");
+        return 1;
+    }
+
+    FILE *fp = fopen("delivery_order.csv", "r");
+    if (!fp) {
+        perror("fopen");
+        shmdt(shared_data);
+        return 1;
+    }
+
+     int line_number = 1;
+while (1) {
+    if (shared_data->order_count >= MAX_ORDERS) {
+        printf("Warning: Maximum number of orders reached (%d).\n", MAX_ORDERS);
+        break;
+```
+Meng-attach shared memory supaya shared_data bisa diakses.
+```
+int ret = fscanf(fp, "%49[^,],%99[^,],%9s\n",
+                     shared_data->orders[shared_data->order_count].name,
+                     shared_data->orders[shared_data->order_count].address,
+                     shared_data->orders[shared_data->order_count].type);
+    if (ret == EOF) break;
+    if (ret != 3) {
+        printf("Error reading line %d: Invalid format (ret=%d)\n", line_number, ret);
+        continue; // skip line
+    }
+```
+Membaca nama, alamat, dan tipe dari file csv.
+
+delivery_agent.c
+```
+SharedData *shared_data;
+pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+```
+Pointer ke shared memory, mutex untuk mengunci akses ke shared memory agar thread tidak menulis di memori bersamaan.
+```
+void write_log(const char* agent_name, const char* recipient, const char* address) {
+    FILE *log = fopen("delivery.log", "a");
+    if (!log) return;
+
+    time_t now = time(NULL);
+    struct tm *t = localtime(&now);
+    fprintf(log, "[%02d/%02d/%04d %02d:%02d:%02d] [%s] Express package delivered to [%s] in [%s]\n",
+        t->tm_mday, t->tm_mon + 1, t->tm_year + 1900,
+        t->tm_hour, t->tm_min, t->tm_sec,
+        agent_name, recipient, address);
+    fclose(log);
+}
+```
+Menulis log ke file delivery.log, membuka file append (mode a) supaya setiap log ditambahkan, bukan menimpa isi file.
+```
+void* agent_thread(void* arg) {
+    char *agent_name = (char*) arg;
+
+    while (1) {
+        pthread_mutex_lock(&lock);
+        int found = 0;
+        for (int i = 0; i < shared_data->order_count; i++) {
+            if (strcmp(shared_data->orders[i].type, "Express") == 0 &&
+                strcmp(shared_data->orders[i].status, "Pending") == 0) {
+                
+                strcpy(shared_data->orders[i].status, "Delivered");
+                strcpy(shared_data->orders[i].agent, agent_name);
+                
+                write_log(agent_name, shared_data->orders[i].name, shared_data->orders[i].address);
+                
+                found = 1;
+                break;
+            }
+        }
+        pthread_mutex_unlock(&lock);
+
+        if (!found) sleep(1);
+    }
+    return NULL;
+}
+```
+Fungsi ini adalah fungsi utama yang dijalankan oleh setiap thread agent (A, B, atau C). Looping terus-menerus untuk mengecek semua pesanan, menggunakan pthread_mutex_lock agar hanya satu thread yang bisa memodifikasi shared memory dalam satu waktu, mencari pesanan dengan type == "Express" dan status == "Pending". Jika ditemukan, status diubah menjadi Delivered, agent dicatat, log ditulis. Setelah memproses satu pesanan, keluar dari loop pencarian dan mutex dilepas. Dengan desain ini, setiap agent hanya akan mengambil satu pesanan dalam satu waktu, dan mencegah dua agent mengambil pesanan yang sama.
+
+```
+int main() {
+    int shmid = shmget(SHM_KEY, sizeof(SharedData), 0666);
+    if (shmid < 0) {
+        perror("shmget");
+        return 1;
+    }
+
+    shared_data = (SharedData*) shmat(shmid, NULL, 0);
+    if (shared_data == (void*) -1) {
+        perror("shmat");
+        return 1;
+    }
+
+    pthread_t agents[3];
+    char* agent_names[3] = {"AGENT A", "AGENT B", "AGENT C"};
+
+    for (int i = 0; i < 3; i++) {
+        pthread_create(&agents[i], NULL, agent_thread, agent_names[i]);
+    }
+
+    for (int i = 0; i < 3; i++) {
+        pthread_join(agents[i], NULL);
+    }
+
+    shmdt(shared_data);
+    return 0;
+}
+```
+Mengambil shared memory menggunakan shmget, meng-attach shared memory ke variabel shared_data, dan membuat 3 thread agent (AGENT A, B, C), masing-masing menjalankan agent_thread.
+
+dispatcher.c
+```
+void write_log(const char* agent_name, const char* recipient, const char* address) {
+    FILE *log = fopen("delivery.log", "a");
+    if (!log) return;
+
+    time_t now = time(NULL);
+    struct tm *t = localtime(&now);
+    fprintf(log, "[%02d/%02d/%04d %02d:%02d:%02d] [%s] Reguler package delivered to [%s] in [%s]\n",
+        t->tm_mday, t->tm_mon + 1, t->tm_year + 1900,
+        t->tm_hour, t->tm_min, t->tm_sec,
+        agent_name, recipient, address);
+    fclose(log);
+}
+```
+Berungsi untuk menulis log ke file delivery.log saat mengirim pesanan Reguler.
+```
+int main(int argc, char* argv[]) {
+```
+Program menerima command-line argument seperti:
+
+./dispatcher -deliver Nama
+
+./dispatcher -status Nama
+
+./dispatcher -list
+
+```
+int shmid = shmget(SHM_KEY, sizeof(SharedData), 0666);
+if (shmid < 0) {
+    perror("shmget");
+    return 1;
+}
+
+SharedData *shared_data = (SharedData*) shmat(shmid, NULL, 0);
+if (shared_data == (void*) -1) {
+    perror("shmat");
+    return 1;
+}
+```
+Mengambil shared memory yang sudah dibuat sebelumnya (oleh init_data.c) lalu attach shared memory → supaya shared_data bisa diakses layaknya pointer biasa.
+```
+if (strcmp(argv[1], "-deliver") == 0 && argc == 3) {
+    char* target_name = argv[2];
+    int found = 0;
+    for (int i = 0; i < shared_data->order_count; i++) {
+        if (strcmp(shared_data->orders[i].name, target_name) == 0 &&
+            strcmp(shared_data->orders[i].type, "Reguler") == 0 &&
+            strcmp(shared_data->orders[i].status, "Pending") == 0) {
+            
+            strcpy(shared_data->orders[i].status, "Delivered");
+            snprintf(shared_data->orders[i].agent, AGENT_NAME_LENGTH, "AGENT %s", getenv("USER") ?: "USER");
+            
+            write_log(shared_data->orders[i].agent, shared_data->orders[i].name, shared_data->orders[i].address);
+            
+            printf("Order for %s has been delivered by %s.\n", target_name, shared_data->orders[i].agent);
+            found = 1;
+            break;
+        }
+    }
+    if (!found) printf("No pending Reguler order for %s found.\n", target_name);
+}
+```
+Program akan mencari pesanan Reguler dengan nama target_name dan status Pending dan jika ketemu:
+
+1. Status di-update jadi Delivered.
+
+2. Agent diisi → format "AGENT <username>".
+
+3. Log ditulis ke delivery.log.
+
+4. Pesan keberhasilan ditampilkan.
+
+Jika tidak ketemu → print pesan error.
+
+Note: Hanya pesanan Reguler dan status Pending yang bisa diantar manual.
+```
+else if (strcmp(argv[1], "-status") == 0 && argc == 3) {
+    char* target_name = argv[2];
+    int found = 0;
+    for (int i = 0; i < shared_data->order_count; i++) {
+        if (strcmp(shared_data->orders[i].name, target_name) == 0) {
+            printf("Status for %s: %s by %s\n",
+                target_name,
+                strcmp(shared_data->orders[i].status, "Delivered") == 0 ? "Delivered" : "Pending",
+                shared_data->orders[i].agent);
+            found = 1;
+            break;
+        }
+    }
+    if (!found) printf("Order for %s not found.\n", target_name);
+}
+```
+Berfungsi untuk mencari order berdasarkan Nama apapun (Reguler/Express).
+```
+else if (strcmp(argv[1], "-list") == 0) {
+    printf("List of orders:\n");
+    for (int i = 0; i < shared_data->order_count; i++) {
+        printf("%d. %s - %s (%s) - %s by %s\n",
+            i+1,
+            shared_data->orders[i].name,
+            shared_data->orders[i].address,
+            shared_data->orders[i].type,
+            strcmp(shared_data->orders[i].status, "Delivered") == 0 ? "Delivered" : "Pending",
+            shared_data->orders[i].agent);
+    }
+}
+```
+Menampilkan semua pesanan: nama, alamat, tipe, status, agent.
+contoh output:
+1. Valin - Jakarta (Express) - Delivered by AGENT A
+2. Novi - Surabaya (Reguler) - Delivered by AGENT userku
+3. Siti - Bandung (Express) - Pending by -
+
+
+
+
+
+
+
+
+
+
 
 # Soal 3
 a. Membuat dungeon.c sebagai server untuk client.c yang terhubung melalui RPC.
