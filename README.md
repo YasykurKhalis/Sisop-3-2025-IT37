@@ -1,3 +1,521 @@
+# Soal 1
+a. Buat Directory
+
+![image](https://github.com/user-attachments/assets/d9f66e9c-004e-4608-954e-c73505dfa04d)
+
+image_server.c
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <time.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <signal.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <dirent.h>
+#include <ctype.h>
+#include <errno.h>
+
+#define PORT 8080
+#define BUFFER_SIZE 1048576  // 1MB buffer
+#define DATABASE_DIR "database"
+#define LOG_FILE "server.log"
+
+void log_action(const char *source, const char *action, const char *info) {
+    time_t now = time(NULL);
+    char timestamp[20];
+    strftime(timestamp, 20, "%Y-%m-%d %H:%M:%S", localtime(&now));
+    
+    FILE *log = fopen(LOG_FILE, "a");
+    if (log) {
+        fprintf(log, "[%s][%s]: [%s] [%s]\n", source, timestamp, action, info);
+        fclose(log);
+    }
+}
+
+void hex_to_bin(const char *hex, unsigned char *bin, size_t len) {
+    for (size_t i = 0; i < len; i += 2) {
+        sscanf(hex + i, "%2hhx", &bin[i/2]);
+    }
+}
+
+void handle_client(int client_socket) {
+    char buffer[BUFFER_SIZE] = {0};
+    char response[BUFFER_SIZE] = {0};
+    
+    // Read client command
+    ssize_t bytes_read = read(client_socket, buffer, BUFFER_SIZE - 1);
+    if (bytes_read <= 0) {
+        log_action("Server", "ERROR", "Read failed");
+        return;
+    }
+    buffer[bytes_read] = '\0';
+
+    char *command = strtok(buffer, "|");
+    char *filename = strtok(NULL, "|");
+    char *data = strtok(NULL, "");  // Get remaining data
+
+    if (!command) {
+        send(client_socket, "ERROR|Invalid command", 21, 0);
+        return;
+    }
+
+    if (strcmp(command, "DECRYPT") == 0 && filename && data) {
+        log_action("Client", "DECRYPT", filename);
+        
+        // Remove newlines from data if any
+        char *p = data;
+        while (*p) {
+            if (*p == '\n' || *p == '\r') *p = ' ';
+            p++;
+        }
+
+        // Reverse the hex string
+        size_t len = strlen(data);
+        for (size_t i = 0; i < len/2; i++) {
+            char temp = data[i];
+            data[i] = data[len-1-i];
+            data[len-1-i] = temp;
+        }
+
+        // Convert hex to binary
+        if (len % 2 != 0) {
+            send(client_socket, "ERROR|Invalid hex length", 24, 0);
+            return;
+        }
+
+        size_t bin_len = len/2;
+        unsigned char *bin_data = malloc(bin_len);
+        if (!bin_data) {
+            send(client_socket, "ERROR|Memory error", 18, 0);
+            return;
+        }
+
+        hex_to_bin(data, bin_data, len);
+
+        // Save JPEG
+        time_t timestamp = time(NULL);
+        char jpeg_path[256];
+        snprintf(jpeg_path, sizeof(jpeg_path), "%s/%ld.jpeg", DATABASE_DIR, timestamp);
+
+        FILE *jpeg_file = fopen(jpeg_path, "wb");
+        if (!jpeg_file) {
+            free(bin_data);
+            send(client_socket, "ERROR|File creation failed", 26, 0);
+            return;
+        }
+
+        fwrite(bin_data, 1, bin_len, jpeg_file);
+        fclose(jpeg_file);
+        free(bin_data);
+
+        snprintf(response, sizeof(response), "OK|%ld.jpeg", timestamp);
+        log_action("Server", "SAVE", jpeg_path);
+    }
+    else if (strcmp(command, "DOWNLOAD") == 0 && filename) {
+        log_action("Client", "DOWNLOAD", filename);
+        
+        char filepath[256];
+        snprintf(filepath, sizeof(filepath), "%s/%s", DATABASE_DIR, filename);
+
+        FILE *file = fopen(filepath, "rb");
+        if (!file) {
+            send(client_socket, "ERROR|File not found", 20, 0);
+            return;
+        }
+
+        fseek(file, 0, SEEK_END);
+        long file_size = ftell(file);
+        fseek(file, 0, SEEK_SET);
+
+        char *file_data = malloc(file_size);
+        if (!file_data) {
+            fclose(file);
+            send(client_socket, "ERROR|Memory error", 18, 0);
+            return;
+        }
+
+        if (fread(file_data, 1, file_size, file) != file_size) {
+            fclose(file);
+            free(file_data);
+            send(client_socket, "ERROR|Read error", 16, 0);
+            return;
+        }
+        fclose(file);
+
+        // Send file size first
+        snprintf(response, sizeof(response), "OK|%ld", file_size);
+        send(client_socket, response, strlen(response), 0);
+
+        // Then send file data
+        send(client_socket, file_data, file_size, 0);
+        free(file_data);
+        log_action("Server", "UPLOAD", filename);
+        return;
+    }
+    else if (strcmp(command, "LIST") == 0) {
+        DIR *dir;
+        struct dirent *ent;
+        char list[BUFFER_SIZE] = {0};
+
+        if ((dir = opendir(DATABASE_DIR)) != NULL) {
+            while ((ent = readdir(dir)) != NULL) {
+                if (strstr(ent->d_name, ".jpeg")) {
+                    strcat(list, ent->d_name);
+                    strcat(list, "\n");
+                }
+            }
+            closedir(dir);
+            send(client_socket, list, strlen(list), 0);
+        } else {
+            send(client_socket, "No files found", 14, 0);
+        }
+        return;
+    }
+    else if (strcmp(command, "EXIT") == 0) {
+        send(client_socket, "OK|Goodbye", 10, 0);
+        log_action("Client", "EXIT", "Client exit");
+    }
+    else {
+        send(client_socket, "ERROR|Invalid command", 21, 0);
+    }
+}
+
+int main() {
+    // Create database directory if not exists
+    mkdir(DATABASE_DIR, 0755);
+
+    int server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (server_fd == 0) {
+        perror("socket failed");
+        exit(EXIT_FAILURE);
+    }
+
+    // Set socket options
+    int opt = 1;
+    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt))) {
+        perror("setsockopt");
+        exit(EXIT_FAILURE);
+    }
+
+    struct sockaddr_in address;
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = INADDR_ANY;
+    address.sin_port = htons(PORT);
+
+    if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0) {
+        perror("bind failed");
+        exit(EXIT_FAILURE);
+    }
+
+    if (listen(server_fd, 3) < 0) {
+        perror("listen");
+        exit(EXIT_FAILURE);
+    }
+
+    // Daemonize
+    if (fork() > 0) {
+        exit(EXIT_SUCCESS);
+    }
+
+    while (1) {
+        int new_socket;
+        int addrlen = sizeof(address);
+        if ((new_socket = accept(server_fd, (struct sockaddr *)&address, (socklen_t*)&addrlen)) < 0) {
+            log_action("Server", "ERROR", "Accept failed");
+            continue;
+        }
+
+        if (fork() == 0) {
+            close(server_fd);
+            handle_client(new_socket);
+            close(new_socket);
+            exit(0);
+        }
+        close(new_socket);
+    }
+
+    return 0;
+}
+
+```
+
+image_client.c
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <dirent.h>
+#include <time.h>
+#include <sys/stat.h>
+#include <errno.h>
+
+#define PORT 8080
+#define BUFFER_SIZE 1048576  // 1MB buffer
+#define SECRETS_DIR "secrets"
+#define OUTPUT_DIR "."
+
+void display_menu() {
+    printf("\n=== The Legend of Rootkids ===\n");
+    printf("1. Decrypt text file\n");
+    printf("2. Download JPEG file\n");
+    printf("3. Exit\n");
+    printf("============================\n");
+    printf("Choose option: ");
+}
+
+int connect_to_server() {
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0) {
+        printf("Socket error: %s\n", strerror(errno));
+        return -1;
+    }
+
+    struct sockaddr_in serv_addr;
+    serv_addr.sin_family = AF_INET;
+    serv_addr.sin_port = htons(PORT);
+
+    if (inet_pton(AF_INET, "127.0.0.1", &serv_addr.sin_addr) <= 0) {
+        printf("Invalid address\n");
+        return -1;
+    }
+
+    if (connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
+        printf("Connection failed: %s\n", strerror(errno));
+        return -1;
+    }
+
+    return sock;
+}
+
+void list_local_files() {
+    DIR *dir;
+    struct dirent *ent;
+    printf("\nLocal text files:\n");
+    
+    if ((dir = opendir(SECRETS_DIR)) != NULL) {
+        while ((ent = readdir(dir)) != NULL) {
+            if (strstr(ent->d_name, ".txt")) {
+                printf("- %s\n", ent->d_name);
+            }
+        }
+        closedir(dir);
+    } else {
+        printf("Cannot open secrets directory\n");
+    }
+}
+
+void decrypt_file(int sock) {
+    list_local_files();
+    
+    char filename[256];
+    printf("\nEnter filename: ");
+    scanf("%255s", filename);
+    
+    char path[512];
+    snprintf(path, sizeof(path), "%s/%s", SECRETS_DIR, filename);
+    
+    FILE *file = fopen(path, "r");
+    if (!file) {
+        printf("Error opening file: %s\n", strerror(errno));
+        return;
+    }
+
+    fseek(file, 0, SEEK_END);
+    long size = ftell(file);
+    fseek(file, 0, SEEK_SET);
+    
+    char *content = malloc(size + 1);
+    if (!content) {
+        fclose(file);
+        printf("Memory error\n");
+        return;
+    }
+    
+    fread(content, 1, size, file);
+    content[size] = '\0';
+    fclose(file);
+    
+    char command[BUFFER_SIZE];
+    snprintf(command, sizeof(command), "DECRYPT|%s|%s", filename, content);
+    free(content);
+    
+    if (send(sock, command, strlen(command), 0) < 0) {
+        printf("Send error\n");
+        return;
+    }
+    
+    char response[BUFFER_SIZE] = {0};
+    ssize_t bytes = read(sock, response, BUFFER_SIZE - 1);
+    if (bytes <= 0) {
+        printf("No response from server\n");
+        return;
+    }
+    response[bytes] = '\0';
+    
+    char *status = strtok(response, "|");
+    char *info = strtok(NULL, "|");
+    
+    if (status && info) {
+        if (strcmp(status, "OK") == 0) {
+            printf("Success! Saved as: %s\n", info);
+        } else {
+            printf("Error: %s\n", info);
+        }
+    } else {
+        printf("Invalid response\n");
+    }
+}
+
+void list_server_files(int sock) {
+    if (send(sock, "LIST", 4, 0) < 0) {
+        printf("Send error\n");
+        return;
+    }
+    
+    char list[BUFFER_SIZE] = {0};
+    ssize_t bytes = read(sock, list, BUFFER_SIZE - 1);
+    if (bytes <= 0) {
+        printf("No response\n");
+        return;
+    }
+    list[bytes] = '\0';
+    
+    printf("\nAvailable JPEG files on server:\n%s", list);
+}
+
+void download_file(int sock) {
+    list_server_files(sock);
+    
+    char filename[256];
+    printf("\nEnter filename to download: ");
+    scanf("%255s", filename);
+    
+    char command[512];
+    snprintf(command, sizeof(command), "DOWNLOAD|%s", filename);
+    
+    if (send(sock, command, strlen(command), 0) < 0) {
+        printf("Send error\n");
+        return;
+    }
+    
+    // First read the response with file size
+    char size_response[256] = {0};
+    ssize_t bytes = read(sock, size_response, 255);
+    if (bytes <= 0) {
+        printf("No response\n");
+        return;
+    }
+    size_response[bytes] = '\0';
+    
+    char *status = strtok(size_response, "|");
+    char *size_str = strtok(NULL, "|");
+    
+    if (!status || !size_str || strcmp(status, "OK") != 0) {
+        printf("Error: %s\n", size_str ? size_str : "Invalid response");
+        return;
+    }
+    
+    long file_size = atol(size_str);
+    if (file_size <= 0) {
+        printf("Invalid file size\n");
+        return;
+    }
+    
+    // Now read the actual file data
+    char *file_data = malloc(file_size);
+    if (!file_data) {
+        printf("Memory error\n");
+        return;
+    }
+    
+    long received = 0;
+    while (received < file_size) {
+        bytes = read(sock, file_data + received, file_size - received);
+        if (bytes <= 0) {
+            free(file_data);
+            printf("Download interrupted\n");
+            return;
+        }
+        received += bytes;
+    }
+    
+    char output_path[512];
+    snprintf(output_path, sizeof(output_path), "%s/%s", OUTPUT_DIR, filename);
+    
+    FILE *file = fopen(output_path, "wb");
+    if (!file) {
+        free(file_data);
+        printf("Cannot create file\n");
+        return;
+    }
+    
+    fwrite(file_data, 1, file_size, file);
+    fclose(file);
+    free(file_data);
+    
+    printf("Success! Downloaded to: %s\n", output_path);
+}
+
+int main() {
+    int option;
+    
+    while (1) {
+        display_menu();
+        if (scanf("%d", &option) != 1) {
+            printf("Invalid input\n");
+            while (getchar() != '\n');
+            continue;
+        }
+        
+        int sock = connect_to_server();
+        if (sock < 0) {
+            if (option != 3) {
+                printf("Please start the server first\n");
+            }
+            if (option == 3) break;
+            continue;
+        }
+        
+        switch (option) {
+            case 1:
+                decrypt_file(sock);
+                break;
+            case 2:
+                download_file(sock);
+                break;
+            case 3:
+                send(sock, "EXIT", 4, 0);
+                printf("Goodbye!\n");
+                close(sock);
+                return 0;
+            default:
+                printf("Invalid option\n");
+        }
+        
+        close(sock);
+    }
+    
+    return 0;
+}
+```
+![image](https://github.com/user-attachments/assets/626ce220-83f4-4b59-9fc8-e1414c540b29)
+
+![image](https://github.com/user-attachments/assets/858cbd7c-4f4e-4abb-b911-0277e55acf86)
+
+![image](https://github.com/user-attachments/assets/abb8e0bf-261d-4c01-a959-b931422946e3)
+
+
 # Soal 3
 a. Membuat dungeon.c sebagai server untuk client.c yang terhubung melalui RPC.
 
